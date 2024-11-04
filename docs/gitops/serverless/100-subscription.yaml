@@ -38,6 +38,6 @@ metadata:
 spec:
   channel: "stable"
   name: "serverless-operator"
-  source: "serverless-operator"
+  source: "redhat-operators"
   sourceNamespace: "openshift-marketplace"
   installPlanApproval: Automatic
