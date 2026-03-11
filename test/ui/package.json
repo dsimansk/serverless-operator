@@ -10,6 +10,12 @@
     "unit": "node --test --test-reporter=spec cypress/code/*.test.js"
   },
   "license": "Apache-2.0",
+  "overrides": {
+    "mocha": {
+      "serialize-javascript": "^7.0.4",
+      "diff": "^8.0.2"
+    }
+  },
   "devDependencies": {
     "@cypress/skip-test": "^2.6.1",
     "cachedir": "^2.4.0",
@@ -17,7 +23,7 @@
     "cypress": "^15.6.0",
     "cypress-multi-reporters": "^2.0.5",
     "diff": "^8.0.2",
-    "mocha": "^11.7.5",
+    "mocha": "^11.3.0",
     "mocha-junit-reporter": "^2.2.1",
     "semver": "^7.7.3"
   }
