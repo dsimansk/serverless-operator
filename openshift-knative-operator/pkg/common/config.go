@@ -1,6 +1,7 @@
 package common
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/operator/pkg/apis/operator/base"
 )
 
@@ -52,4 +53,48 @@ func ConfigureIfConfigmapUnset(s *base.CommonSpec, cm, key, value string) {
 	}
 
 	s.Config[cm][key] = value
+}
+
+// SetAnnotationIfUnset sets an annotation on the given object if it's not already set.
+func SetAnnotationIfUnset(obj metav1.Object, key, value string) {
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	if _, ok := annotations[key]; !ok {
+		annotations[key] = value
+		obj.SetAnnotations(annotations)
+	}
+}
+
+// EnsureWorkloadOverride finds the workload override by name and merges the given labels
+// and annotations into it without overwriting existing values. If no override exists for
+// the given name, a new one is appended.
+func EnsureWorkloadOverride(s *base.CommonSpec, name string, labels, annotations map[string]string) {
+	for i, w := range s.Workloads {
+		if w.Name == name {
+			mergeIfUnset(&s.Workloads[i].Labels, labels)
+			mergeIfUnset(&s.Workloads[i].Annotations, annotations)
+			return
+		}
+	}
+	s.Workloads = append(s.Workloads, base.WorkloadOverride{
+		Name:        name,
+		Labels:      labels,
+		Annotations: annotations,
+	})
+}
+
+func mergeIfUnset(dst *map[string]string, src map[string]string) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[string]string, len(src))
+	}
+	for k, v := range src {
+		if _, ok := (*dst)[k]; !ok {
+			(*dst)[k] = v
+		}
+	}
 }

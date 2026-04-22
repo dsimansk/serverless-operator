@@ -14,11 +14,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"knative.dev/operator/pkg/apis/operator/base"
 	operatorv1beta1 "knative.dev/operator/pkg/apis/operator/v1beta1"
 	"knative.dev/pkg/apis"
+	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	kubefake "knative.dev/pkg/client/injection/kube/client/fake"
 	dynamicfake "knative.dev/pkg/injection/clients/dynamicclient/fake"
 
@@ -45,9 +47,10 @@ func init() {
 func TestReconcile(t *testing.T) {
 
 	cases := []struct {
-		name     string
-		in       *operatorv1beta1.KnativeEventing
-		expected *operatorv1beta1.KnativeEventing
+		name      string
+		apiGroups []string // API group versions for fake discovery (e.g. "sailoperator.io/v1")
+		in        *operatorv1beta1.KnativeEventing
+		expected  *operatorv1beta1.KnativeEventing
 	}{{
 		name:     "all nil",
 		in:       &operatorv1beta1.KnativeEventing{},
@@ -129,6 +132,95 @@ func TestReconcile(t *testing.T) {
 			},
 			istioEnabled,
 		),
+	}, {
+		name:      "Istio enabled with SM3 detected",
+		apiGroups: []string{"sailoperator.io/v1"},
+		in: &operatorv1beta1.KnativeEventing{
+			Spec: operatorv1beta1.KnativeEventingSpec{
+				CommonSpec: base.CommonSpec{
+					Config: base.ConfigMapData{
+						"features": map[string]string{
+							"istio": "Enabled",
+						},
+					},
+				},
+			},
+		},
+		expected: ke(
+			func(eventing *operatorv1beta1.KnativeEventing) {
+				eventing.Annotations = map[string]string{
+					"serverless.openshift.io/disable-istio-net-policies-generation": "true",
+				}
+				if eventing.Spec.Config == nil {
+					eventing.Spec.Config = map[string]map[string]string{}
+				}
+				eventing.Spec.CommonSpec.Config["features"] = map[string]string{
+					"istio": "Enabled",
+				}
+			},
+			istioEnabled,
+			meshSidecarWorkloads,
+		),
+	}, {
+		name:      "Istio enabled with SM2 detected",
+		apiGroups: []string{"maistra.io/v2"},
+		in: &operatorv1beta1.KnativeEventing{
+			Spec: operatorv1beta1.KnativeEventingSpec{
+				CommonSpec: base.CommonSpec{
+					Config: base.ConfigMapData{
+						"features": map[string]string{
+							"istio": "Enabled",
+						},
+					},
+				},
+			},
+		},
+		expected: ke(
+			func(eventing *operatorv1beta1.KnativeEventing) {
+				if eventing.Spec.Config == nil {
+					eventing.Spec.Config = map[string]map[string]string{}
+				}
+				eventing.Spec.CommonSpec.Config["features"] = map[string]string{
+					"istio": "Enabled",
+				}
+			},
+			istioEnabled,
+			meshSidecarWorkloads,
+		),
+	}, {
+		name:      "Istio enabled with SM3, user set disable annotation to false",
+		apiGroups: []string{"sailoperator.io/v1"},
+		in: &operatorv1beta1.KnativeEventing{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"serverless.openshift.io/disable-istio-net-policies-generation": "false",
+				},
+			},
+			Spec: operatorv1beta1.KnativeEventingSpec{
+				CommonSpec: base.CommonSpec{
+					Config: base.ConfigMapData{
+						"features": map[string]string{
+							"istio": "Enabled",
+						},
+					},
+				},
+			},
+		},
+		expected: ke(
+			func(eventing *operatorv1beta1.KnativeEventing) {
+				eventing.Annotations = map[string]string{
+					"serverless.openshift.io/disable-istio-net-policies-generation": "false",
+				}
+				if eventing.Spec.Config == nil {
+					eventing.Spec.Config = map[string]map[string]string{}
+				}
+				eventing.Spec.CommonSpec.Config["features"] = map[string]string{
+					"istio": "Enabled",
+				}
+			},
+			istioEnabled,
+			meshSidecarWorkloads,
+		),
 	}}
 
 	for _, c := range cases {
@@ -141,6 +233,15 @@ func TestReconcile(t *testing.T) {
 			ke := c.in.DeepCopy()
 			ctx, _ := kubefake.With(context.Background(), &eventingNamespace)
 			ctx, _ = dynamicfake.With(ctx, scheme.Scheme)
+			if len(c.apiGroups) > 0 {
+				kclient := kubeclient.Get(ctx)
+				fd := kclient.Discovery().(*fakediscovery.FakeDiscovery)
+				resources := make([]*metav1.APIResourceList, 0, len(c.apiGroups))
+				for _, gv := range c.apiGroups {
+					resources = append(resources, &metav1.APIResourceList{GroupVersion: gv})
+				}
+				fd.Resources = resources
+			}
 			ext := NewExtension(ctx, nil)
 			ext.Reconcile(context.Background(), ke)
 
@@ -466,4 +567,15 @@ func istioEnabled(ke *operatorv1beta1.KnativeEventing) {
 		Name:     "eventing-istio-controller",
 		Replicas: ptr.To(int32(1)),
 	})
+}
+
+func meshSidecarWorkloads(ke *operatorv1beta1.KnativeEventing) {
+	sidecarInjectLabel := map[string]string{"sidecar.istio.io/inject": "true"}
+	sidecarDisableLabel := map[string]string{"sidecar.istio.io/inject": "false"}
+	for _, name := range []string{"pingsource-mt-adapter", "mt-broker-ingress", "mt-broker-filter", "imc-dispatcher", "job-sink"} {
+		common.EnsureWorkloadOverride(&ke.Spec.CommonSpec, name, sidecarInjectLabel, nil)
+	}
+	for _, name := range []string{"eventing-controller", "eventing-istio-controller", "eventing-webhook", "imc-controller", "mt-broker-controller"} {
+		common.EnsureWorkloadOverride(&ke.Spec.CommonSpec, name, sidecarDisableLabel, nil)
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/openshift-knative/serverless-operator/openshift-knative-operator/pkg/common"
 	"github.com/openshift-knative/serverless-operator/openshift-knative-operator/pkg/monitoring"
 	socommon "github.com/openshift-knative/serverless-operator/pkg/common"
+	"github.com/openshift-knative/serverless-operator/pkg/istio"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -182,6 +183,26 @@ func (e *extension) Reconcile(ctx context.Context, comp base.KComponent) error {
 	// Temporary fix for SRVKS-743
 	if ks.Spec.Ingress.Istio.Enabled {
 		common.ConfigureIfUnset(&ks.Spec.CommonSpec, monitoring.ObservabilityCMName, monitoring.ObservabilityBackendKey, "none")
+	}
+	// Auto-configure Service Mesh settings when Istio ingress is enabled.
+	if ks.Spec.Ingress != nil && ks.Spec.Ingress.Istio.Enabled {
+		if istio.IsServiceMesh3Installed(e.kubeclient.Discovery()) {
+			// SM3: disable auto-generated network policies and set gateway endpoints.
+			common.SetAnnotationIfUnset(ks, disableGeneratingIstioNetPoliciesAnnotation, "true")
+			common.ConfigureIfUnset(&ks.Spec.CommonSpec, "istio",
+				"gateway.knative-serving.knative-ingress-gateway",
+				"knative-istio-ingressgateway.knative-serving-ingress.svc.cluster.local")
+			common.ConfigureIfUnset(&ks.Spec.CommonSpec, "istio",
+				"local-gateway.knative-serving.knative-local-gateway",
+				"knative-local-gateway.knative-serving-ingress.svc.cluster.local")
+		}
+
+		// Configure sidecar injection for mesh workloads (SM2 and SM3).
+		if istio.IsServiceMeshInstalled(e.kubeclient.Discovery()) {
+			sidecarInjectLabel := map[string]string{"sidecar.istio.io/inject": "true"}
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "activator", sidecarInjectLabel, nil)
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "autoscaler", sidecarInjectLabel, nil)
+		}
 	}
 
 	if !oldResourceRemoved.Load() {

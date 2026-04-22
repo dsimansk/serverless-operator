@@ -79,6 +79,7 @@ func TestReconcile(t *testing.T) {
 	cases := []struct {
 		name       string
 		k8sVersion string
+		apiGroups  []string // API group versions for fake discovery (e.g. "sailoperator.io/v1")
 		in         *operatorv1beta1.KnativeServing
 		objs       []runtime.Object
 		expected   *operatorv1beta1.KnativeServing
@@ -322,6 +323,113 @@ func TestReconcile(t *testing.T) {
 			ks.Namespace = "foo"
 			ks.Status.MarkInstallFailed(`Knative Serving must be installed into the namespace "knative-serving"`)
 		}),
+	}, {
+		name:      "istio enabled with SM3 detected",
+		apiGroups: []string{"sailoperator.io/v1"},
+		in: &operatorv1beta1.KnativeServing{
+			Spec: operatorv1beta1.KnativeServingSpec{
+				Ingress: &operatorv1beta1.IngressConfigs{
+					Istio: base.IstioIngressConfiguration{
+						Enabled: true,
+					},
+				},
+			},
+		},
+		expected: ks(func(ks *operatorv1beta1.KnativeServing) {
+			ks.Annotations = map[string]string{
+				"serverless.openshift.io/disable-istio-net-policies-generation": "true",
+			}
+			ks.Spec.Ingress = &operatorv1beta1.IngressConfigs{
+				Istio: base.IstioIngressConfiguration{
+					Enabled: true,
+				},
+			}
+			common.Configure(&ks.Spec.CommonSpec, "network", "ingress.class", istioIngressClassName)
+			common.Configure(&ks.Spec.CommonSpec, monitoring.ObservabilityCMName, monitoring.ObservabilityBackendKey, "none")
+			common.Configure(&ks.Spec.CommonSpec, "istio",
+				"gateway.knative-serving.knative-ingress-gateway",
+				"knative-istio-ingressgateway.knative-serving-ingress.svc.cluster.local")
+			common.Configure(&ks.Spec.CommonSpec, "istio",
+				"local-gateway.knative-serving.knative-local-gateway",
+				"knative-local-gateway.knative-serving-ingress.svc.cluster.local")
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "activator",
+				map[string]string{"sidecar.istio.io/inject": "true"}, nil)
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "autoscaler",
+				map[string]string{"sidecar.istio.io/inject": "true"}, nil)
+		}),
+	}, {
+		name:      "istio enabled with SM2 detected",
+		apiGroups: []string{"maistra.io/v2"},
+		in: &operatorv1beta1.KnativeServing{
+			Spec: operatorv1beta1.KnativeServingSpec{
+				Ingress: &operatorv1beta1.IngressConfigs{
+					Istio: base.IstioIngressConfiguration{
+						Enabled: true,
+					},
+				},
+			},
+		},
+		expected: ks(func(ks *operatorv1beta1.KnativeServing) {
+			ks.Spec.Ingress = &operatorv1beta1.IngressConfigs{
+				Istio: base.IstioIngressConfiguration{
+					Enabled: true,
+				},
+			}
+			common.Configure(&ks.Spec.CommonSpec, "network", "ingress.class", istioIngressClassName)
+			common.Configure(&ks.Spec.CommonSpec, monitoring.ObservabilityCMName, monitoring.ObservabilityBackendKey, "none")
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "activator",
+				map[string]string{"sidecar.istio.io/inject": "true"}, nil)
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "autoscaler",
+				map[string]string{"sidecar.istio.io/inject": "true"}, nil)
+		}),
+	}, {
+		name:      "istio enabled with SM3, user already set gateway config",
+		apiGroups: []string{"sailoperator.io/v1"},
+		in: &operatorv1beta1.KnativeServing{
+			Spec: operatorv1beta1.KnativeServingSpec{
+				CommonSpec: base.CommonSpec{
+					Config: base.ConfigMapData{
+						"istio": map[string]string{
+							"gateway.knative-serving.knative-ingress-gateway":    "custom-gateway.custom-ns.svc.cluster.local",
+							"local-gateway.knative-serving.knative-local-gateway": "custom-local.custom-ns.svc.cluster.local",
+						},
+					},
+				},
+				Ingress: &operatorv1beta1.IngressConfigs{
+					Istio: base.IstioIngressConfiguration{
+						Enabled: true,
+					},
+				},
+			},
+		},
+		expected: ks(func(ks *operatorv1beta1.KnativeServing) {
+			ks.Annotations = map[string]string{
+				"serverless.openshift.io/disable-istio-net-policies-generation": "true",
+			}
+			ks.Spec.Ingress = &operatorv1beta1.IngressConfigs{
+				Istio: base.IstioIngressConfiguration{
+					Enabled: true,
+				},
+			}
+			common.Configure(&ks.Spec.CommonSpec, "network", "ingress.class", istioIngressClassName)
+			common.Configure(&ks.Spec.CommonSpec, monitoring.ObservabilityCMName, monitoring.ObservabilityBackendKey, "none")
+			// User values preserved
+			common.Configure(&ks.Spec.CommonSpec, "istio",
+				"gateway.knative-serving.knative-ingress-gateway",
+				"custom-gateway.custom-ns.svc.cluster.local")
+			common.Configure(&ks.Spec.CommonSpec, "istio",
+				"local-gateway.knative-serving.knative-local-gateway",
+				"custom-local.custom-ns.svc.cluster.local")
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "activator",
+				map[string]string{"sidecar.istio.io/inject": "true"}, nil)
+			common.EnsureWorkloadOverride(&ks.Spec.CommonSpec, "autoscaler",
+				map[string]string{"sidecar.istio.io/inject": "true"}, nil)
+		}),
+	}, {
+		name:      "istio not enabled, SM3 present, no SM3 config applied",
+		apiGroups: []string{"sailoperator.io/v1"},
+		in:        &operatorv1beta1.KnativeServing{},
+		expected:  ks(),
 	}}
 
 	for _, c := range cases {
@@ -349,7 +457,7 @@ func TestReconcile(t *testing.T) {
 			ctx, _ := routefake.With(context.Background(), routeObjs...)
 			ctx, _ = configfake.With(ctx, configObjs...)
 			ctx, _ = kubefake.With(ctx, &servingNamespace)
-			ext := newFakeExtension(ctx, t)
+			ext := newFakeExtension(ctx, t, c.apiGroups...)
 			ext.Reconcile(context.Background(), ks)
 			// Ignore time differences.
 			opt := cmp.Comparer(func(apis.VolatileTime, apis.VolatileTime) bool {
@@ -362,7 +470,7 @@ func TestReconcile(t *testing.T) {
 	}
 }
 
-func newFakeExtension(ctx context.Context, t *testing.T) operator.Extension {
+func newFakeExtension(ctx context.Context, t *testing.T, apiGroupVersions ...string) operator.Extension {
 	kclient := kubeclient.Get(ctx)
 	fakeDiscovery, ok := kclient.Discovery().(*fakediscovery.FakeDiscovery)
 	if !ok {
@@ -371,6 +479,14 @@ func newFakeExtension(ctx context.Context, t *testing.T) operator.Extension {
 
 	fakeDiscovery.FakedServerVersion = &version.Info{
 		GitVersion: defaultK8sVersion,
+	}
+
+	if len(apiGroupVersions) > 0 {
+		resources := make([]*metav1.APIResourceList, 0, len(apiGroupVersions))
+		for _, gv := range apiGroupVersions {
+			resources = append(resources, &metav1.APIResourceList{GroupVersion: gv})
+		}
+		fakeDiscovery.Resources = resources
 	}
 
 	return &extension{

@@ -26,6 +26,7 @@ import (
 
 	"github.com/openshift-knative/serverless-operator/openshift-knative-operator/pkg/common"
 	"github.com/openshift-knative/serverless-operator/openshift-knative-operator/pkg/monitoring"
+	"github.com/openshift-knative/serverless-operator/pkg/istio"
 	"github.com/openshift-knative/serverless-operator/pkg/istio/eventingistio"
 )
 
@@ -133,6 +134,26 @@ func (e *extension) Reconcile(ctx context.Context, comp base.KComponent) error {
 		eventingistio.ScaleIstioController(requiredNs, ke, 0)
 	} else {
 		eventingistio.ScaleIstioController(requiredNs, ke, 1)
+	}
+
+	// Auto-configure Service Mesh settings when Istio is enabled.
+	if eventingistio.IsEnabled(ke.GetSpec().GetConfig()) {
+		if istio.IsServiceMesh3Installed(e.kubeclient.Discovery()) {
+			common.SetAnnotationIfUnset(ke, disableGeneratingIstioNetPoliciesAnnotation, "true")
+		}
+
+		// Configure sidecar injection for mesh workloads (SM2 and SM3).
+		if istio.IsServiceMeshInstalled(e.kubeclient.Discovery()) {
+			sidecarInjectLabel := map[string]string{"sidecar.istio.io/inject": "true"}
+			sidecarDisableLabel := map[string]string{"sidecar.istio.io/inject": "false"}
+
+			for _, name := range []string{"pingsource-mt-adapter", "mt-broker-ingress", "mt-broker-filter", "imc-dispatcher", "job-sink"} {
+				common.EnsureWorkloadOverride(&ke.Spec.CommonSpec, name, sidecarInjectLabel, nil)
+			}
+			for _, name := range []string{"eventing-controller", "eventing-istio-controller", "eventing-webhook", "imc-controller", "mt-broker-controller"} {
+				common.EnsureWorkloadOverride(&ke.Spec.CommonSpec, name, sidecarDisableLabel, nil)
+			}
+		}
 	}
 
 	return monitoring.ReconcileMonitoringForEventing(ctx, e.kubeclient, ke)
