@@ -1,4 +1,4 @@
-FROM registry.ci.openshift.org/origin/scos-4.22:operator-registry AS opm
+FROM registry.ci.openshift.org/origin/scos-5.0:operator-registry AS opm
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal as builder
 
@@ -23,7 +23,7 @@ RUN /bin/opm render -o yaml /bundle >> /configs/index.yaml
 
 # The base image is expected to contain
 # /bin/opm (with a serve subcommand) and /bin/grpc_health_probe
-FROM registry.ci.openshift.org/origin/scos-4.22:operator-registry
+FROM registry.ci.openshift.org/origin/scos-5.0:operator-registry
 
 # Copy declarative config root into image at /configs
 COPY --from=builder /configs /configs
